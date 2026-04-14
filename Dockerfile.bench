@@ -1,0 +1,14 @@
+FROM --platform=linux/amd64 golang:1.26
+
+WORKDIR /src
+COPY go.mod ./
+COPY *.go ./
+COPY cmd/ cmd/
+RUN mkdir -p /results
+
+# Run benchmarks: scalar (baseline) then SIMD
+CMD echo "=== AMD64 Scalar Baseline ===" && \
+    go test -bench=. -benchmem -count=1 -benchtime=500ms | tee /results/scalar.txt && \
+    echo "" && \
+    echo "=== AMD64 SIMD (GOEXPERIMENT=simd) ===" && \
+    GOEXPERIMENT=simd go test -bench=. -benchmem -count=1 -benchtime=500ms | tee /results/simd.txt
