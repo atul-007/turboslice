@@ -6,7 +6,7 @@ import (
 	"runtime"
 	"time"
 
-	"github.com/a-ranjan/turboslice"
+	"github.com/atul-007/turboslice"
 )
 
 func main() {
