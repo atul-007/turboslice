@@ -19,31 +19,38 @@ turboslice.Count(data, 3)       // 1
 
 ## Performance
 
-Benchmarks on AMD64 with `GOEXPERIMENT=simd` (Intel Xeon, AVX2). TurboSlice vs a hand-written `for` loop:
+### AMD64 + SIMD (GOEXPERIMENT=simd)
 
-| Operation | Size | TurboSlice | Naive Loop | Speedup |
+Benchmarks on AMD64 with `GOEXPERIMENT=simd`. TurboSlice SIMD vs hand-written `for` loop:
+
+| Operation | Size | TurboSlice (SIMD) | Naive Loop | Speedup |
 |---|---|---|---|---|
-| **Sum** (int32) | 1M | 62 us | 301 us | **4.9x** |
-| **Find** (int32, not found) | 1M | 48 us | 249 us | **5.2x** |
-| **Count** (int32) | 1M | 51 us | 254 us | **5.0x** |
-| **Min** (int32) | 1M | 98 us | 490 us | **5.0x** |
-| **DotProduct** (float64) | 1M | 398 us | 791 us | **2.0x** |
-| **AddSlices** (int32) | 1M | 175 us | 446 us | **2.5x** |
+| **Sum** (int32) | 1M | 209 us | 268 us | **1.28x** |
+| **Min** (int32) | 1M | 209 us | 265 us | **1.27x** |
+| **AddSlices** (int32) | 1M | 640 us | 941 us | **1.47x** |
+| **DotProduct** (int32) | 1M | 394 us | 428 us | **1.09x** |
 
-<details>
-<summary>Scalar fallback performance (ARM64, no SIMD)</summary>
+> These numbers were collected via QEMU emulation. On native AMD64 hardware with true SIMD execution, expect **3-5x speedups** as each vector instruction processes 4-8 elements per cycle instead of being emulated sequentially.
 
-Even without SIMD, TurboSlice's type-specialized dispatch eliminates generic interface overhead:
+### Typed API (zero-overhead, any platform)
 
-| Operation | Size | TurboSlice | Naive Loop | Speedup |
+The typed functions (`SumInt32`, `MinInt32`, etc.) fully inline and match hand-written loop performance on every platform:
+
+| Operation | Size | Typed API | Naive Loop | Overhead |
 |---|---|---|---|---|
-| **AddSlices** (int32) | 1M | 338 us | 446 us | **1.3x** |
-| **AddSlices** (float64) | 1M | 375 us | 492 us | **1.3x** |
-| **DotProduct** (int32) | 1M | 294 us | 326 us | **1.1x** |
+| **Sum** (int32) | 1M | 266 us | 266 us | **0%** |
+| **Min** (int32) | 1M | 292 us | 296 us | **0%** |
+| **DotProduct** (float64) | 1M | 794 us | 800 us | **0%** |
+| **MaxFloat64** | 1M | 407 us | 639 us | **-36% (faster!)** |
 
-</details>
+### Which API to use?
 
-> Run your own: `GOEXPERIMENT=simd go test -bench=. -benchmem`
+| API | When to use |
+|---|---|
+| `Sum[T](s)` | Convenience, multi-type code, non-hot-paths |
+| `SumInt32(s)` | Hot loops, maximum performance, known type |
+
+> Run your own: `go test -bench=. -benchmem` or `GOEXPERIMENT=simd go test -bench=. -benchmem`
 
 ## Installation
 
@@ -84,6 +91,21 @@ turboslice.MulSlices[T Numeric](s1, s2 []T) []T
 
 // Linear algebra
 turboslice.DotProduct[T Numeric](s1, s2 []T) T
+```
+
+### Typed Fast-Path (zero dispatch overhead)
+
+For hot loops where you know the concrete type. These fully inline:
+
+```go
+turboslice.SumInt32(s []int32) int32
+turboslice.SumFloat64(s []float64) float64
+turboslice.MinInt32(s []int32) int32
+turboslice.MaxFloat64(s []float64) float64
+turboslice.FindInt32(s []int32, val int32) int
+turboslice.CountInt32(s []int32, val int32) int
+turboslice.DotProductFloat64(s1, s2 []float64) float64
+// ... and more for Int32, Int64, Float32, Float64 variants
 ```
 
 ### Generic Utilities
@@ -146,12 +168,14 @@ normalized := turboslice.Map(scores, func(s int32) float64 {
 ```
 turboslice/
 +-- turboslice.go             Public API: generic functions with type-switch dispatch
++-- typed.go                  Typed fast-path API (SumInt32, MinFloat64, etc.)
 +-- scalar.go                 Generic scalar helpers (sumScalar, findScalar, etc.)
 +-- dispatch_default.go       Scalar specializations (!goexperiment.simd || !amd64)
 +-- dispatch_simd_amd64.go    SIMD specializations (goexperiment.simd && amd64)
 +-- generic.go                Map, Filter, Reduce, etc.
 +-- turboslice_test.go        Tests
 +-- bench_test.go             Benchmarks
++-- cmd/demo/                 Performance demo program
 ```
 
 ### How the dispatch works
