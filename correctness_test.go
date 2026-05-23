@@ -309,6 +309,24 @@ func TestSumFloat32_NaNPropagates(t *testing.T) {
 	}
 }
 
+// Regression: a fuzz failure surfaced an input where both turboslice and
+// the naive baseline correctly produce NaN (finite products overflow to
+// +Inf and -Inf, then sum to NaN). The fuzz helper now treats NaN==NaN
+// as agreement; this test pins that contract so the helper can't quietly
+// regress to strict equality.
+func TestDotProductFloat64_OverflowToNaN(t *testing.T) {
+	a := []float64{1e300, 1e300, 1e300}
+	b := []float64{1e300, -1e300, 1e300}
+	got := DotProduct(a, b)
+	if !math.IsNaN(got) && !math.IsInf(got, 0) {
+		t.Errorf("DotProduct overflow case = %g; want NaN or Inf", got)
+	}
+	// And the cross-validation predicate must accept NaN==NaN.
+	if !floatsAgree(math.NaN(), math.NaN(), 1e-9) {
+		t.Error("floatsAgree(NaN, NaN) must be true")
+	}
+}
+
 // --- Generic-fallback equivalence ---
 //
 // Generic Sum/Min/Max on non-SIMD types must agree with the typed naive

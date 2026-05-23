@@ -107,19 +107,33 @@ func FuzzDotProductFloat64(f *testing.F) {
 		}
 		half := len(s) / 2
 		a, c := s[:half], s[half:half*2]
-		// Skip NaN-containing inputs: float dot ordering differs between
-		// scalar-linear and SIMD-tree reductions when NaNs poison the
-		// accumulator partway through.
+		// Skip non-finite inputs as an optimization (the trivial NaN-in,
+		// NaN-out case isn't interesting). The floatsAgree predicate below
+		// still handles the case where finite inputs *produce* NaN/Inf
+		// through overflow, which happens with values near 1e300.
 		if containsNonFinite(a) || containsNonFinite(c) {
 			return
 		}
 		want := naiveDotProductFloat64(a, c)
 		got := DotProduct(a, c)
-		if !approxEqual(got, want, 1e-6) {
+		if !floatsAgree(got, want, 1e-6) {
 			t.Fatalf("DotProduct disagrees: got %g, want %g (n=%d)",
 				got, want, len(a))
 		}
 	})
+}
+
+// floatsAgree is the cross-validation predicate for fuzz tests:
+// two NaNs agree (we don't care about NaN bit patterns, only that both
+// implementations reached the same overall outcome), otherwise fall back
+// to approxEqual. Without this, the test fails spuriously whenever both
+// implementations correctly produce NaN — e.g. when finite inputs
+// overflow products to +/-Inf and then sum to Inf - Inf = NaN.
+func floatsAgree(a, b, tol float64) bool {
+	if math.IsNaN(a) && math.IsNaN(b) {
+		return true
+	}
+	return approxEqual(a, b, tol)
 }
 
 func FuzzAddSlicesInt32(f *testing.F) {
