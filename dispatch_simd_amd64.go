@@ -117,9 +117,9 @@ func findInt32(s []int32, val int32) int {
 	for ; i+int32Lane <= n; i += int32Lane {
 		v := archsimd.LoadInt32x4Slice(s[i:])
 		mask := v.Equal(needle)
-		bits := mask.ToBits()
-		if bits != 0 {
-			return i + trailingZeros4(bits)
+		b := mask.ToBits()
+		if b != 0 {
+			return i + bits.TrailingZeros8(b)
 		}
 	}
 
@@ -169,7 +169,7 @@ func findFloat32(s []float32, val float32) int {
 		mask := v.Equal(needle)
 		b := mask.ToBits()
 		if b != 0 {
-			return i + trailingZeros4(b)
+			return i + bits.TrailingZeros8(b)
 		}
 	}
 
@@ -779,6 +779,14 @@ func addSlicesFloat64(dst, s1, s2 []float64) {
 	}
 }
 
+// mulSlicesInt64 is scalar: no SSE/AVX2 int64 multiply instruction.
+// Exposed here so the generic dispatch can reach it without boxing.
+func mulSlicesInt64(dst, s1, s2 []int64) {
+	for i := range dst {
+		dst[i] = s1[i] * s2[i]
+	}
+}
+
 func mulSlicesInt32(dst, s1, s2 []int32) {
 	n := len(dst)
 	i := 0
@@ -841,8 +849,11 @@ func dotProductInt32(s1, s2 []int32) int32 {
 	return total
 }
 
+// dotProductInt64 is intentionally scalar: SSE/AVX2 have no 64-bit integer
+// multiply (PMULLQ exists only on AVX-512 DQ). When the project gains an
+// AVX-512 dispatch this can become vectorized; until then it matches the
+// hand-written loop exactly so callers see no surprise.
 func dotProductInt64(s1, s2 []int64) int64 {
-	// Int64 doesn't have Mul in SIMD, fall back to scalar
 	var total int64
 	for i := range s1 {
 		total += s1[i] * s2[i]
@@ -892,9 +903,3 @@ func dotProductFloat64(s1, s2 []float64) float64 {
 	return total
 }
 
-// --- Helpers ---
-
-// trailingZeros4 finds the index of the lowest set bit in a 4-bit mask.
-func trailingZeros4(b uint8) int {
-	return bits.TrailingZeros8(b)
-}

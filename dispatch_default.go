@@ -289,6 +289,12 @@ func mulSlicesInt32(dst, s1, s2 []int32) {
 	}
 }
 
+func mulSlicesInt64(dst, s1, s2 []int64) {
+	for i := range dst {
+		dst[i] = s1[i] * s2[i]
+	}
+}
+
 func mulSlicesFloat32(dst, s1, s2 []float32) {
 	for i := range dst {
 		dst[i] = s1[i] * s2[i]
