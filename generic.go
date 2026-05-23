@@ -17,11 +17,14 @@ func Map[T any, U any](s []T, fn func(T) U) []U {
 }
 
 // Filter returns a new slice containing only elements for which fn returns true.
+// Contract: nil input returns nil; any non-nil input (even all-rejected) returns
+// a non-nil slice. The result is preallocated to len(s) capacity, which is
+// optimal for selective filters and wastes at most one allocation otherwise.
 func Filter[T any](s []T, fn func(T) bool) []T {
 	if s == nil {
 		return nil
 	}
-	var result []T
+	result := make([]T, 0, len(s))
 	for _, v := range s {
 		if fn(v) {
 			result = append(result, v)
@@ -118,7 +121,11 @@ func Reverse[T any](s []T) []T {
 }
 
 // Flatten concatenates a slice of slices into a single slice.
+// Contract: nil input returns nil; non-nil input always returns non-nil.
 func Flatten[T any](ss [][]T) []T {
+	if ss == nil {
+		return nil
+	}
 	total := 0
 	for _, s := range ss {
 		total += len(s)
