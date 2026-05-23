@@ -55,7 +55,12 @@ total := turboslice.Sum(data) // SIMD-accelerated on AMD64
 Measured on AMD64, TurboSlice SIMD vs a hand-written `for` loop.
 
 > [!NOTE]
-> Numbers below were collected via QEMU emulation (Apple Silicon host). QEMU executes SIMD instructions **sequentially**, not in parallel. On native AMD64 hardware, expect **3-5x real speedups** as each vector instruction processes 4-8 elements simultaneously.
+> Numbers below were collected via QEMU emulation (Apple Silicon host). QEMU
+> executes SIMD instructions sequentially, not in parallel. Native AMD64
+> hardware should be measurably faster — the wider the lane and the better
+> the back-end pipelining, the larger the gap. The projection table further
+> down lists the per-instruction speedup ceilings, but the realized speedup
+> depends on the CPU and isn't guaranteed without re-benchmarking.
 
 ```
 goos: linux
@@ -89,25 +94,30 @@ These scale further with AVX2 (8x `int32`) and AVX-512 (16x `int32`).
 
 </details>
 
-### Zero-overhead Typed API (any platform)
+### Typed API on the scalar path (any platform)
 
-The typed functions (`SumInt32`, `DotProductFloat64`, etc.) are compiler-verified to **fully inline**, matching hand-written loop performance with 0% overhead:
+The typed functions (`SumInt32`, `DotProductFloat64`, etc.) are thin wrappers
+over the internal kernels. On a recent local run, they match the naive
+hand-written loop within noise — i.e. no measurable generic-dispatch overhead:
 
 ```
 BenchmarkMinInt32/Typed/1M          292,276 ns/op     0 allocs
 BenchmarkMinInt32/NaiveLoop/1M      296,177 ns/op     0 allocs
-                                    ^^^^^^^^^^^^^^^^
-                                    identical. zero overhead.
 ```
 
 ```
 BenchmarkMaxFloat64/Typed/1M        407,044 ns/op
 BenchmarkMaxFloat64/NaiveLoop/1M    639,607 ns/op
-                                    ^^^^^^^^^^^^^^^^
-                                    36% faster than the naive loop!
 ```
 
+The `MaxFloat64` gap is the compiler choosing different code shape for the
+typed wrapper than for a naive `for v := range s` loop, not SIMD — these
+numbers were collected without `GOEXPERIMENT=simd`.
+
 > Reproduce: `go test -bench=. -benchmem -count=3`
+> Your numbers will vary with CPU, frequency, and Go version. Take any
+> single ratio with a grain of salt and re-benchmark before optimizing
+> against this library specifically.
 
 ## Install
 
@@ -172,6 +182,28 @@ Reverse[T](s []T) []T                       // reverse copy
 Flatten[T](ss [][]T) []T                    // join nested
 ForEach[T](s []T, fn func(T))              // side effects
 ```
+
+## Behavior notes
+
+A few things to know before reaching for these in production:
+
+- **`Min`, `Max`, `MinMax` panic on empty slices.** Matches `slices.Min`/`Max`
+  from the standard library. Check `len(s) > 0` first.
+- **`Sum` returns the zero value for empty slices.** No panic.
+- **`AddSlices`, `MulSlices`, `DotProduct` silently truncate** to
+  `min(len(s1), len(s2))`. Pass equal-length slices to avoid surprises.
+- **Integer overflow is not checked.** `Sum` and `DotProduct` accumulate in
+  the element type, same as a hand-written loop, so wide reductions on
+  narrow integers (`int8`, `int16`, `int32`) can wrap. Cast to a wider type
+  before summing if that's a concern.
+- **`int64` multiplication is scalar even on SIMD builds.** SSE/AVX2 have no
+  64-bit integer multiply (`PMULLQ` is AVX-512 DQ only). `MulSlices[int64]`
+  and `DotProduct[int64]` therefore run a plain `for` loop on every
+  architecture.
+- **NaN handling differs between SIMD and scalar `Min`/`Max`.** SSE
+  `MINPS`/`MAXPS` returns the second operand when either side is NaN; the
+  scalar fallback uses `<`/`>`, which is always false against NaN. Filter
+  NaNs before calling if you need deterministic behavior.
 
 ## Real-World Examples
 
@@ -293,6 +325,7 @@ git clone https://github.com/atul-007/turboslice
 cd turboslice
 go test ./...                                           # run tests
 go test -bench=. -benchmem                              # run benchmarks
+go test -fuzz=FuzzSumInt32 -fuzztime=30s                # exercise tail loops
 GOARCH=amd64 GOEXPERIMENT=simd go vet ./...             # verify SIMD path
 ```
 
