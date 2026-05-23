@@ -67,13 +67,13 @@ func Find[T comparable](s []T, val T) int {
 	}
 	switch s := any(s).(type) {
 	case []int32:
-		return findInt32(s, int32(any(val).(int32)))
+		return findInt32(s, any(val).(int32))
 	case []int64:
-		return findInt64(s, int64(any(val).(int64)))
+		return findInt64(s, any(val).(int64))
 	case []float32:
-		return findFloat32(s, float32(any(val).(float32)))
+		return findFloat32(s, any(val).(float32))
 	case []float64:
-		return findFloat64(s, float64(any(val).(float64)))
+		return findFloat64(s, any(val).(float64))
 	default:
 		return findScalar(any(s).([]T), val)
 	}
@@ -92,13 +92,13 @@ func Count[T comparable](s []T, val T) int {
 	}
 	switch s := any(s).(type) {
 	case []int32:
-		return countInt32(s, int32(any(val).(int32)))
+		return countInt32(s, any(val).(int32))
 	case []int64:
-		return countInt64(s, int64(any(val).(int64)))
+		return countInt64(s, any(val).(int64))
 	case []float32:
-		return countFloat32(s, float32(any(val).(float32)))
+		return countFloat32(s, any(val).(float32))
 	case []float64:
-		return countFloat64(s, float64(any(val).(float64)))
+		return countFloat64(s, any(val).(float64))
 	default:
 		return countScalar(any(s).([]T), val)
 	}
@@ -169,7 +169,8 @@ func MinMax[T Numeric](s []T) (min, max T) {
 }
 
 // AddSlices returns a new slice where each element is s1[i] + s2[i].
-// The result length is min(len(s1), len(s2)).
+// The result length is min(len(s1), len(s2)); extra elements in the longer
+// slice are silently ignored. Pass equal-length slices to avoid surprises.
 func AddSlices[T Numeric](s1, s2 []T) []T {
 	n := len(s1)
 	if len(s2) < n {
@@ -179,26 +180,29 @@ func AddSlices[T Numeric](s1, s2 []T) []T {
 		return nil
 	}
 	result := make([]T, n)
-	switch s1 := any(s1).(type) {
+	switch v := any(s1).(type) {
 	case []int32:
-		addSlicesInt32(any(result).([]int32), s1[:n], any(s2).([]int32)[:n])
+		addSlicesInt32(any(result).([]int32), v[:n], any(s2).([]int32)[:n])
 	case []int64:
-		addSlicesInt64(any(result).([]int64), s1[:n], any(s2).([]int64)[:n])
+		addSlicesInt64(any(result).([]int64), v[:n], any(s2).([]int64)[:n])
 	case []float32:
-		addSlicesFloat32(any(result).([]float32), s1[:n], any(s2).([]float32)[:n])
+		addSlicesFloat32(any(result).([]float32), v[:n], any(s2).([]float32)[:n])
 	case []float64:
-		addSlicesFloat64(any(result).([]float64), s1[:n], any(s2).([]float64)[:n])
+		addSlicesFloat64(any(result).([]float64), v[:n], any(s2).([]float64)[:n])
 	default:
-		s2t := any(s2).([]T)
 		for i := 0; i < n; i++ {
-			result[i] = any(s1).([]T)[i] + s2t[i]
+			result[i] = s1[i] + s2[i]
 		}
 	}
 	return result
 }
 
 // MulSlices returns a new slice where each element is s1[i] * s2[i].
-// The result length is min(len(s1), len(s2)).
+// The result length is min(len(s1), len(s2)); extra elements in the longer
+// slice are silently ignored. Pass equal-length slices to avoid surprises.
+//
+// SIMD acceleration covers int32, float32, and float64. int64 multiplication
+// has no SSE/AVX2 instruction and uses the scalar path.
 func MulSlices[T Numeric](s1, s2 []T) []T {
 	n := len(s1)
 	if len(s2) < n {
@@ -208,25 +212,32 @@ func MulSlices[T Numeric](s1, s2 []T) []T {
 		return nil
 	}
 	result := make([]T, n)
-	switch s1 := any(s1).(type) {
+	switch v := any(s1).(type) {
 	case []int32:
-		mulSlicesInt32(any(result).([]int32), s1[:n], any(s2).([]int32)[:n])
+		mulSlicesInt32(any(result).([]int32), v[:n], any(s2).([]int32)[:n])
+	case []int64:
+		mulSlicesInt64(any(result).([]int64), v[:n], any(s2).([]int64)[:n])
 	case []float32:
-		mulSlicesFloat32(any(result).([]float32), s1[:n], any(s2).([]float32)[:n])
+		mulSlicesFloat32(any(result).([]float32), v[:n], any(s2).([]float32)[:n])
 	case []float64:
-		mulSlicesFloat64(any(result).([]float64), s1[:n], any(s2).([]float64)[:n])
+		mulSlicesFloat64(any(result).([]float64), v[:n], any(s2).([]float64)[:n])
 	default:
-		s1t := any(s1).([]T)
-		s2t := any(s2).([]T)
 		for i := 0; i < n; i++ {
-			result[i] = s1t[i] * s2t[i]
+			result[i] = s1[i] * s2[i]
 		}
 	}
 	return result
 }
 
 // DotProduct returns the dot product (sum of element-wise products) of two slices.
-// Uses min(len(s1), len(s2)) elements.
+// Uses min(len(s1), len(s2)) elements; extra elements in the longer slice are
+// silently ignored.
+//
+// SIMD acceleration covers int32, float32, and float64. int64 dot product
+// falls back to a scalar loop (no SSE/AVX2 int64 multiply).
+//
+// The accumulator type is T, so callers using narrow integer types should
+// be wary of overflow on large slices (same behavior as a hand-written loop).
 func DotProduct[T Numeric](s1, s2 []T) T {
 	n := len(s1)
 	if len(s2) < n {
