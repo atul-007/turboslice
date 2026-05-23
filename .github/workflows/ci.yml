@@ -1,0 +1,72 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  test:
+    name: ${{ matrix.label }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - label: linux/amd64 (scalar)
+            os: ubuntu-latest
+            goexperiment: ""
+          - label: linux/amd64 (SIMD)
+            os: ubuntu-latest
+            goexperiment: "simd"
+          - label: macos/arm64 (scalar)
+            os: macos-latest
+            goexperiment: ""
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.26"
+          check-latest: true
+
+      - name: go version
+        run: go version
+
+      - name: go vet
+        env:
+          GOEXPERIMENT: ${{ matrix.goexperiment }}
+        run: go vet ./...
+
+      - name: go test
+        env:
+          GOEXPERIMENT: ${{ matrix.goexperiment }}
+        run: go test -race -count=1 ./...
+
+      - name: go build (cmd/demo)
+        env:
+          GOEXPERIMENT: ${{ matrix.goexperiment }}
+        run: go build ./cmd/demo
+
+  fuzz-smoke:
+    name: fuzz smoke (linux/amd64, SIMD)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.26"
+          check-latest: true
+
+      - name: fuzz targets (15s each)
+        env:
+          GOEXPERIMENT: simd
+        run: |
+          for target in FuzzSumInt32 FuzzMinInt32 FuzzFindInt32 FuzzCountInt32 FuzzAddSlicesInt32 FuzzDotProductFloat64; do
+            echo "::group::$target"
+            go test -run=^$ -fuzz=$target -fuzztime=15s
+            echo "::endgroup::"
+          done
