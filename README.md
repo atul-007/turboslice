@@ -306,6 +306,33 @@ go run ./cmd/demo/
 
 # AMD64 via Docker (from ARM64 host)
 ./scripts/bench-amd64.sh
+
+# Native AMD64 (best numbers — runs both builds + benchstat)
+./scripts/bench-native.sh           # ~7 min, default profile
+./scripts/bench-native.sh quick     # ~90s smoke test
+./scripts/bench-native.sh deep      # ~20 min, publishable
+```
+
+### Native benchmark on a Linux box (for contributors)
+
+If you have access to a real linux/amd64 machine, `scripts/bench-native.sh`
+runs the full bench suite under both build paths, captures CPU/kernel/Go
+fingerprint, and produces a single `bench-results/summary.md` ready to
+attach to an issue or PR:
+
+```bash
+git clone https://github.com/atul-007/turboslice
+cd turboslice
+./scripts/bench-native.sh                          # collect
+tar -czf bench-results.tgz bench-results/          # bundle
+# attach bench-results.tgz to an issue
+```
+
+For low-variance numbers, set the CPU governor to `performance` first
+(the script prints a warning if it isn't):
+
+```bash
+sudo cpupower frequency-set -g performance
 ```
 
 ## Roadmap

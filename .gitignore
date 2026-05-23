@@ -10,3 +10,4 @@ vendor/
 .idea/
 .vscode/
 .claude/
+bench-results/
