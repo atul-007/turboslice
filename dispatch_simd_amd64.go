@@ -12,18 +12,37 @@ import (
 // with the same API patterns adaptable to 256-bit AVX2 in the future.
 
 const (
-	int32Lane  = 4 // Int32x4: 4 elements per 128-bit vector
-	int64Lane  = 2 // Int64x2: 2 elements per 128-bit vector
-	f32Lane    = 4 // Float32x4: 4 elements per 128-bit vector
-	f64Lane    = 2 // Float64x2: 2 elements per 128-bit vector
+	int32Lane = 4 // Int32x4: 4 elements per 128-bit vector
+	int64Lane = 2 // Int64x2: 2 elements per 128-bit vector
+	f32Lane   = 4 // Float32x4: 4 elements per 128-bit vector
+	f64Lane   = 2 // Float64x2: 2 elements per 128-bit vector
+)
+
+// Below these sizes the scalar loop (which the Go compiler auto-vectorizes)
+// beats the 128-bit SSE implementation. Measured on Sapphire Rapids
+// (c3-standard-4) — see bench-results-tokyo/compare.txt. Sum regresses
+// 17% at N=1K but wins 25% at N=64K; dot product needs a higher cutoff
+// because its work per element is heavier and the SIMD entry cost is
+// proportionally larger.
+const (
+	simdSumMinN = 4096
+	simdDotMinN = 16384
 )
 
 // --- Sum ---
 
 func sumInt32(s []int32) int32 {
+	n := len(s)
+	if n < simdSumMinN {
+		var total int32
+		for _, v := range s {
+			total += v
+		}
+		return total
+	}
+
 	var acc archsimd.Int32x4
 	i := 0
-	n := len(s)
 
 	// Process 4 elements at a time
 	for ; i+int32Lane <= n; i += int32Lane {
@@ -44,9 +63,17 @@ func sumInt32(s []int32) int32 {
 }
 
 func sumInt64(s []int64) int64 {
+	n := len(s)
+	if n < simdSumMinN {
+		var total int64
+		for _, v := range s {
+			total += v
+		}
+		return total
+	}
+
 	var acc archsimd.Int64x2
 	i := 0
-	n := len(s)
 
 	for ; i+int64Lane <= n; i += int64Lane {
 		v := archsimd.LoadInt64x2Slice(s[i:])
@@ -64,9 +91,17 @@ func sumInt64(s []int64) int64 {
 }
 
 func sumFloat32(s []float32) float32 {
+	n := len(s)
+	if n < simdSumMinN {
+		var total float32
+		for _, v := range s {
+			total += v
+		}
+		return total
+	}
+
 	var acc archsimd.Float32x4
 	i := 0
-	n := len(s)
 
 	for ; i+f32Lane <= n; i += f32Lane {
 		v := archsimd.LoadFloat32x4Slice(s[i:])
@@ -84,9 +119,17 @@ func sumFloat32(s []float32) float32 {
 }
 
 func sumFloat64(s []float64) float64 {
+	n := len(s)
+	if n < simdSumMinN {
+		var total float64
+		for _, v := range s {
+			total += v
+		}
+		return total
+	}
+
 	var acc archsimd.Float64x2
 	i := 0
-	n := len(s)
 
 	for ; i+f64Lane <= n; i += f64Lane {
 		v := archsimd.LoadFloat64x2Slice(s[i:])
@@ -104,27 +147,16 @@ func sumFloat64(s []float64) float64 {
 }
 
 // --- Find ---
+//
+// Find is intentionally scalar on the SIMD build. The Go compiler
+// auto-vectorizes the scalar loop into AVX2/AVX-512 on amd64 and beats
+// the 128-bit SSE version measured on Sapphire Rapids (c3-standard-4)
+// by 13-14% at N=1M. We can't beat the compiler here until the simd
+// package exposes wider lanes.
 
 func findInt32(s []int32, val int32) int {
-	n := len(s)
-	i := 0
-
-	// Broadcast the search value to all lanes
-	var valBuf [4]int32
-	valBuf[0], valBuf[1], valBuf[2], valBuf[3] = val, val, val, val
-	needle := archsimd.LoadInt32x4(&valBuf)
-
-	for ; i+int32Lane <= n; i += int32Lane {
-		v := archsimd.LoadInt32x4Slice(s[i:])
-		mask := v.Equal(needle)
-		b := mask.ToBits()
-		if b != 0 {
-			return i + bits.TrailingZeros8(b)
-		}
-	}
-
-	for ; i < n; i++ {
-		if s[i] == val {
+	for i, v := range s {
+		if v == val {
 			return i
 		}
 	}
@@ -132,24 +164,8 @@ func findInt32(s []int32, val int32) int {
 }
 
 func findInt64(s []int64, val int64) int {
-	n := len(s)
-	i := 0
-
-	var valBuf [2]int64
-	valBuf[0], valBuf[1] = val, val
-	needle := archsimd.LoadInt64x2(&valBuf)
-
-	for ; i+int64Lane <= n; i += int64Lane {
-		v := archsimd.LoadInt64x2Slice(s[i:])
-		mask := v.Equal(needle)
-		b := mask.ToBits()
-		if b != 0 {
-			return i + bits.TrailingZeros8(b)
-		}
-	}
-
-	for ; i < n; i++ {
-		if s[i] == val {
+	for i, v := range s {
+		if v == val {
 			return i
 		}
 	}
@@ -157,24 +173,8 @@ func findInt64(s []int64, val int64) int {
 }
 
 func findFloat32(s []float32, val float32) int {
-	n := len(s)
-	i := 0
-
-	var valBuf [4]float32
-	valBuf[0], valBuf[1], valBuf[2], valBuf[3] = val, val, val, val
-	needle := archsimd.LoadFloat32x4(&valBuf)
-
-	for ; i+f32Lane <= n; i += f32Lane {
-		v := archsimd.LoadFloat32x4Slice(s[i:])
-		mask := v.Equal(needle)
-		b := mask.ToBits()
-		if b != 0 {
-			return i + bits.TrailingZeros8(b)
-		}
-	}
-
-	for ; i < n; i++ {
-		if s[i] == val {
+	for i, v := range s {
+		if v == val {
 			return i
 		}
 	}
@@ -182,24 +182,8 @@ func findFloat32(s []float32, val float32) int {
 }
 
 func findFloat64(s []float64, val float64) int {
-	n := len(s)
-	i := 0
-
-	var valBuf [2]float64
-	valBuf[0], valBuf[1] = val, val
-	needle := archsimd.LoadFloat64x2(&valBuf)
-
-	for ; i+f64Lane <= n; i += f64Lane {
-		v := archsimd.LoadFloat64x2Slice(s[i:])
-		mask := v.Equal(needle)
-		b := mask.ToBits()
-		if b != 0 {
-			return i + bits.TrailingZeros8(b)
-		}
-	}
-
-	for ; i < n; i++ {
-		if s[i] == val {
+	for i, v := range s {
+		if v == val {
 			return i
 		}
 	}
@@ -766,15 +750,12 @@ func addSlicesFloat32(dst, s1, s2 []float32) {
 	}
 }
 
+// addSlicesFloat64 is intentionally scalar on the SIMD build. The Go
+// compiler auto-vectorizes element-wise float64 add into AVX-512 on
+// Sapphire Rapids and beats the 128-bit SSE path at every size
+// (+12% at 64K with hand-written SSE).
 func addSlicesFloat64(dst, s1, s2 []float64) {
-	n := len(dst)
-	i := 0
-	for ; i+f64Lane <= n; i += f64Lane {
-		v1 := archsimd.LoadFloat64x2Slice(s1[i:])
-		v2 := archsimd.LoadFloat64x2Slice(s2[i:])
-		v1.Add(v2).StoreSlice(dst[i:])
-	}
-	for ; i < n; i++ {
+	for i := range dst {
 		dst[i] = s1[i] + s2[i]
 	}
 }
@@ -830,6 +811,14 @@ func mulSlicesFloat64(dst, s1, s2 []float64) {
 
 func dotProductInt32(s1, s2 []int32) int32 {
 	n := len(s1)
+	if n < simdDotMinN {
+		var total int32
+		for i := range s1 {
+			total += s1[i] * s2[i]
+		}
+		return total
+	}
+
 	i := 0
 	var acc archsimd.Int32x4
 
@@ -863,6 +852,14 @@ func dotProductInt64(s1, s2 []int64) int64 {
 
 func dotProductFloat32(s1, s2 []float32) float32 {
 	n := len(s1)
+	if n < simdDotMinN {
+		var total float32
+		for i := range s1 {
+			total += s1[i] * s2[i]
+		}
+		return total
+	}
+
 	i := 0
 	var acc archsimd.Float32x4
 
@@ -882,22 +879,14 @@ func dotProductFloat32(s1, s2 []float32) float32 {
 	return total
 }
 
+// dotProductFloat64 is intentionally scalar on the SIMD build. The Go
+// compiler auto-vectorizes the float64 multiply-add chain into AVX-512
+// FMA on Sapphire Rapids and beats the hand-written 128-bit SSE path
+// at every size measured (+21% at 64K, +25% at 1M). Keeping it scalar
+// also preserves the exact NaN/Inf semantics the regression test asserts.
 func dotProductFloat64(s1, s2 []float64) float64 {
-	n := len(s1)
-	i := 0
-	var acc archsimd.Float64x2
-
-	for ; i+f64Lane <= n; i += f64Lane {
-		v1 := archsimd.LoadFloat64x2Slice(s1[i:])
-		v2 := archsimd.LoadFloat64x2Slice(s2[i:])
-		acc = acc.Add(v1.Mul(v2))
-	}
-
-	var buf [2]float64
-	acc.Store(&buf)
-	total := buf[0] + buf[1]
-
-	for ; i < n; i++ {
+	var total float64
+	for i := range s1 {
 		total += s1[i] * s2[i]
 	}
 	return total
