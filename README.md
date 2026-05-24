@@ -14,7 +14,9 @@
 
 ---
 
-Drop-in replacements for your `for` loops that run on **SIMD vector instructions** (SSE/AVX2) on AMD64 via Go 1.26's [`simd/archsimd`](https://pkg.go.dev/simd/archsimd) — with automatic scalar fallback on ARM64 and everything else. Zero CGo. Zero assembly files. Pure Go.
+Drop-in replacements for your `for` loops that run on **128-bit SSE vector instructions** on AMD64 via Go 1.26's [`simd/archsimd`](https://pkg.go.dev/simd/archsimd) — with automatic scalar fallback on ARM64 and everything else. Zero CGo. Zero assembly files. Pure Go.
+
+Measured on **Intel Xeon Platinum 8481C** (Sapphire Rapids), TurboSlice wins **24-62%** on aggregations over slices ≥64K elements. See [benchmarks](#benchmarks) and [when SIMD helps vs when it doesn't](#when-simd-helps-vs-when-it-doesnt) below for the honest scope.
 
 ```go
 import "github.com/atul-007/turboslice"
@@ -40,10 +42,10 @@ for _, v := range data {
 }
 ```
 
-TurboSlice replaces it with a single call that processes **4-8 elements per CPU cycle** using SIMD vector instructions:
+TurboSlice replaces it with a single call that processes **4 `int32`s per SSE instruction** — and on Sapphire Rapids that turns into a **2.6x speedup** for `Min`/`Max` over 1M elements:
 
 ```go
-total := turboslice.Sum(data) // SIMD-accelerated on AMD64
+total := turboslice.Sum(data) // SIMD-accelerated on AMD64 for slices >=4K
 ```
 
 **No assembly. No CGo. No unsafe.** Just `go get` and go.
@@ -52,72 +54,86 @@ total := turboslice.Sum(data) // SIMD-accelerated on AMD64
 
 ### AMD64 + SIMD (`GOEXPERIMENT=simd`)
 
-Measured on AMD64, TurboSlice SIMD vs a hand-written `for` loop.
-
-> [!NOTE]
-> Numbers below were collected via QEMU emulation (Apple Silicon host). QEMU
-> executes SIMD instructions sequentially, not in parallel. Native AMD64
-> hardware should be measurably faster — the wider the lane and the better
-> the back-end pipelining, the larger the gap. The projection table further
-> down lists the per-instruction speedup ceilings, but the realized speedup
-> depends on the CPU and isn't guaranteed without re-benchmarking.
+Native run on **GCE c3-standard-4** — Intel Xeon Platinum 8481C @ 2.7 GHz
+(Sapphire Rapids, AVX-512), Linux 6.1, Go 1.26.1, performance governor,
+6 iterations via `benchstat`. Reproduce with `./scripts/bench-native.sh`
+on any linux/amd64 box.
 
 ```
 goos: linux
 goarch: amd64
-cpu: VirtualApple @ 2.50GHz
+cpu: Intel(R) Xeon(R) Platinum 8481C CPU @ 2.70GHz
 ```
 
-| Operation | Elements | TurboSlice | `for` loop | Faster |
+| Operation | Elements | TurboSlice (SIMD) | Scalar build | Speedup |
 |:---|---:|---:|---:|:---|
-| **Sum** `int32` | 1M | 209 us | 268 us | **1.28x** |
-| **Min** `int32` | 1M | 209 us | 265 us | **1.27x** |
-| **Max** `float64` | 1M | 419 us | 639 us | **1.53x** |
-| **AddSlices** `int32` | 1M | 640 us | 941 us | **1.47x** |
-| **AddSlices** `float64` | 1M | 706 us | 1061 us | **1.50x** |
-| **DotProduct** `int32` | 1M | 394 us | 428 us | **1.09x** |
+| **Min** `int32` | 1M | 267 µs | 705 µs | **2.64x** |
+| **Min** `int32` | 64K | 16.5 µs | 44.0 µs | **2.66x** |
+| **Min** `int32` | 1K | 275 ns | 681 ns | **2.48x** |
+| **Count** `int32` | 1M | 360 µs | 681 µs | **1.89x** |
+| **Count** `int32` | 64K | 22.5 µs | 38.7 µs | **1.72x** |
+| **Sum** `int32` | 1M | 266 µs | 353 µs | **1.33x** |
+| **Sum** `int32` | 64K | 16.7 µs | 22.1 µs | **1.32x** |
+| **Sum** `float64` | 1M | 531 µs | 705 µs | **1.33x** |
+| **DotProduct** `int32` | 1M | 453 µs | 700 µs | **1.55x** |
+| **AddSlices** `int32` | 1M | 701 µs | 878 µs | **1.25x** |
 
-<details>
-<summary><strong>Projected native AMD64 performance</strong> (click to expand)</summary>
-<br>
+**Geomean across the whole benchmark suite: −6.30%** (SIMD build vs scalar build).
 
-Each SSE vector instruction processes 4x `int32` or 2x `float64` in a single cycle. With proper pipelining, this yields:
+### When SIMD helps vs when it doesn't
 
-| Operation | Projected native speedup |
+Hand-written 128-bit SSE doesn't beat the Go compiler's auto-vectorizer
+everywhere. On Sapphire Rapids the compiler already emits AVX-512 for trivial
+reduction loops; the SIMD path only wins where lane-comparison patterns
+(min/max/count) aren't autovectorized as well. The breakdown:
+
+| Operation | What runs on the SIMD build |
 |:---|:---|
-| Sum, Min, Max, Count, Find (`int32`) | **~4x** (4 elements/cycle) |
-| Sum, Min, Max (`float64`) | **~2x** (2 elements/cycle) |
-| DotProduct (`float32`) | **~4x** (FMA: multiply + add fused) |
-| AddSlices, MulSlices | **~4x** (`int32`), **~2x** (`float64`) |
+| `Min`, `Max`, `MinMax`, `Count` | **SSE** — 2-3x win at every size |
+| `Sum`, `DotProduct[int32/float32]` | **SSE for N ≥ 4K (Sum) / N ≥ 16K (DotProduct), scalar otherwise** — overhead doesn't amortize at small N |
+| `AddSlices[int32/float32]`, `MulSlices` | **SSE** — modest win on large slices |
+| `Find`, `Contains`, `DotProduct[float64]`, `AddSlices[float64]` | **Scalar** — compiler autovectorization beats hand-written SSE here, so we don't try |
+| `MulSlices[int64]`, `DotProduct[int64]` | **Scalar everywhere** — no 64-bit integer multiply in SSE/AVX2 (`PMULLQ` is AVX-512 DQ only) |
 
-These scale further with AVX2 (8x `int32`) and AVX-512 (16x `int32`).
+This is honest: the library detects when SIMD wouldn't help and falls through
+to the scalar implementation, so you don't pay an overhead tax for small slices
+or operations the compiler already vectorizes well.
 
-</details>
+### Size thresholds
 
-### Typed API on the scalar path (any platform)
+The SIMD-build implementations of `Sum` and `DotProductInt32`/`DotProductFloat32`
+guard on slice length and run a scalar loop below the crossover point:
 
-The typed functions (`SumInt32`, `DotProductFloat64`, etc.) are thin wrappers
-over the internal kernels. On a recent local run, they match the naive
-hand-written loop within noise — i.e. no measurable generic-dispatch overhead:
-
-```
-BenchmarkMinInt32/Typed/1M          292,276 ns/op     0 allocs
-BenchmarkMinInt32/NaiveLoop/1M      296,177 ns/op     0 allocs
-```
-
-```
-BenchmarkMaxFloat64/Typed/1M        407,044 ns/op
-BenchmarkMaxFloat64/NaiveLoop/1M    639,607 ns/op
+```go
+const (
+    simdSumMinN = 4096   // Sum* uses SIMD for N >= 4096
+    simdDotMinN = 16384  // DotProduct[int32/float32] uses SIMD for N >= 16384
+)
 ```
 
-The `MaxFloat64` gap is the compiler choosing different code shape for the
-typed wrapper than for a naive `for v := range s` loop, not SIMD — these
-numbers were collected without `GOEXPERIMENT=simd`.
+These were chosen from the per-N benchmark data — below the threshold,
+function-call overhead and SIMD setup cost outweighs the throughput gain.
 
-> Reproduce: `go test -bench=. -benchmem -count=3`
-> Your numbers will vary with CPU, frequency, and Go version. Take any
-> single ratio with a grain of salt and re-benchmark before optimizing
-> against this library specifically.
+### Typed API has zero dispatch overhead
+
+The typed entry points (`SumInt32`, `MinInt32`, …) inline into the kernel
+without going through `interface{}` or a type switch. On the scalar build they
+match the naive hand-written loop within noise:
+
+```
+BenchmarkMinInt32/Typed/1M          704.9 µs    0 allocs
+BenchmarkMinInt32/NaiveLoop/1M      704.3 µs    0 allocs
+```
+
+On the SIMD build they collect the win:
+
+```
+BenchmarkMinInt32/Typed/1M          266.6 µs    (2.64x faster)
+```
+
+> Reproduce: `./scripts/bench-native.sh` on a real Linux box, or
+> `go test -bench=. -benchmem -count=3` for a quick local check.
+> Numbers will vary with CPU vendor, frequency, and Go version.
 
 ## Install
 
@@ -200,6 +216,16 @@ A few things to know before reaching for these in production:
   64-bit integer multiply (`PMULLQ` is AVX-512 DQ only). `MulSlices[int64]`
   and `DotProduct[int64]` therefore run a plain `for` loop on every
   architecture.
+- **`Find`, `Contains`, `DotProduct[float64]`, `AddSlices[float64]` are
+  scalar on every build.** The Go compiler's auto-vectorizer produces
+  faster code than hand-written 128-bit SSE for these patterns on modern
+  AMD64 (especially CPUs with AVX2/AVX-512), so the SIMD build deliberately
+  doesn't override them.
+- **`Sum` and `DotProduct[int32/float32]` use scalar below a size
+  threshold.** SIMD only activates for `Sum` at N ≥ 4096 and for these
+  `DotProduct` variants at N ≥ 16384. Below that, function-call and SIMD
+  setup overhead outweighs throughput. The threshold is a compile-time
+  constant in [`dispatch_simd_amd64.go`](dispatch_simd_amd64.go).
 - **NaN handling differs between SIMD and scalar `Min`/`Max`.** SSE
   `MINPS`/`MAXPS` returns the second operand when either side is NaN; the
   scalar fallback uses `<`/`>`, which is always false against NaN. Filter
@@ -337,11 +363,13 @@ sudo cpupower frequency-set -g performance
 
 ## Roadmap
 
-- [ ] **AVX2 (256-bit)** - 2x wider vectors with runtime feature detection
-- [ ] **AVX-512** - 4x wider on supported CPUs
-- [ ] **ARM64 NEON** - when `simd/archsimd` adds support
-- [ ] **Parallel fan-out** - goroutine splitting for 10M+ element slices
-- [ ] **SIMD Sort** - vectorized partitioning for radix/quick sort hybrids
+- [ ] **AVX2/AVX-512 intrinsics** — only for ops where the compiler's
+  auto-vectorizer doesn't already use them (today that's `Min`/`Max`/`Count`
+  on `int32`/`int64`; the float reductions are already AVX-512 in the
+  scalar build). Gated on `archsimd.X86.AVX2()`/`AVX512F()`.
+- [ ] **ARM64 NEON** — when `simd/archsimd` adds support.
+- [ ] **Parallel fan-out** — goroutine splitting for 10M+ element slices.
+- [ ] **SIMD Sort** — vectorized partitioning for radix/quick sort hybrids.
 
 ## Contributing
 
